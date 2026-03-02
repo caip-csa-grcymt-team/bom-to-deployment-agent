@@ -1,6 +1,10 @@
 name: Provision Infrastructure v2 (AVM)
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'specs/*.xlsx'
   workflow_dispatch:
     inputs:
       spec_file:
@@ -26,9 +30,67 @@ env:
   AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
-  provision:
-    name: Provision ${{ github.event.inputs.spec_file }}
+  # ---------------------------------------------------------------
+  # Detect which spec files to process
+  # ---------------------------------------------------------------
+  detect:
+    name: Detect spec files
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      environment: ${{ steps.set-matrix.outputs.environment }}
+      location: ${{ steps.set-matrix.outputs.location }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect spec files and set matrix
+        id: set-matrix
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger — use provided inputs
+            SPEC_FILES='["${{ github.event.inputs.spec_file }}"]'
+            ENVIRONMENT="${{ github.event.inputs.environment }}"
+            LOCATION="${{ github.event.inputs.location }}"
+          else
+            # Push trigger — detect changed xlsx files in specs/
+            CHANGED=$(git diff --name-only HEAD~1 HEAD -- 'specs/*.xlsx' \
+              | xargs -I{} basename {} \
+              | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+            if [ "$CHANGED" == "[]" ] || [ -z "$CHANGED" ]; then
+              echo "::warning::No xlsx files changed in specs/"
+              SPEC_FILES='[]'
+            else
+              SPEC_FILES="$CHANGED"
+            fi
+
+            # Push-triggered runs default to dev / westeurope
+            ENVIRONMENT="dev"
+            LOCATION="westeurope"
+          fi
+
+          echo "matrix={\"spec_file\":${SPEC_FILES}}" >> $GITHUB_OUTPUT
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "location=$LOCATION" >> $GITHUB_OUTPUT
+
+          echo "Detected spec files: $SPEC_FILES"
+          echo "Environment: $ENVIRONMENT"
+          echo "Location: $LOCATION"
+
+  # ---------------------------------------------------------------
+  # Provision each detected spec file
+  # ---------------------------------------------------------------
+  provision:
+    name: Provision ${{ matrix.spec_file }}
+    needs: detect
+    if: ${{ needs.detect.outputs.matrix != '{"spec_file":[]}' }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.detect.outputs.matrix) }}
+      fail-fast: false
     permissions:
       id-token: write
       contents: read
@@ -43,7 +105,7 @@ jobs:
       - name: Parse spec filename
         id: parse
         run: |
-          FILENAME="${{ github.event.inputs.spec_file }}"
+          FILENAME="${{ matrix.spec_file }}"
           BASENAME="${FILENAME%.xlsx}"
 
           # Parse components: <project-number>-<authority-id>-<project-id>
@@ -54,8 +116,8 @@ jobs:
             exit 1
           fi
 
-          ENVIRONMENT="${{ github.event.inputs.environment }}"
-          LOCATION="${{ github.event.inputs.location }}"
+          ENVIRONMENT="${{ needs.detect.outputs.environment }}"
+          LOCATION="${{ needs.detect.outputs.location }}"
           APPLICATION_NAME="$(echo "${AUTHORITY_ID}${PROJECT_ID}" | tr '[:upper:]' '[:lower:]')"
 
           # Region abbreviation for naming convention
@@ -214,8 +276,8 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         run: |
-          SPEC_FILE="specs/${{ github.event.inputs.spec_file }}"
-          BASENAME="${{ github.event.inputs.spec_file }}"
+          SPEC_FILE="specs/${{ matrix.spec_file }}"
+          BASENAME="${{ matrix.spec_file }}"
           BASENAME="${BASENAME%.xlsx}"
           OUTPUT_DIR="output/${BASENAME}"
           AUTHORITY_ID="${{ steps.parse.outputs.authority_id }}"
@@ -461,7 +523,7 @@ jobs:
           echo "### Configuration" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Spec File | \`${{ github.event.inputs.spec_file }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Spec File | \`${{ matrix.spec_file }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Application Name | \`${{ steps.parse.outputs.application_name }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | \`${{ steps.parse.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Location | \`${{ steps.parse.outputs.location }}\` |" >> $GITHUB_STEP_SUMMARY
