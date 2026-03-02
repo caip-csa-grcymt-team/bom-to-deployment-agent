@@ -1,0 +1,24 @@
+{
+  "mcpServers": {
+    "bom-parser": {
+      "command": "${REPO_ROOT}/.venv/Scripts/python.exe",
+      "args": ["-m", "mcp_servers.bom_server"],
+      "cwd": "${REPO_ROOT}/copilot-cli",
+      "env": {
+        "PYTHONPATH": "${REPO_ROOT}/copilot-cli"
+      }
+    },
+    "ipam-client": {
+      "command": "${REPO_ROOT}/.venv/Scripts/python.exe",
+      "args": ["-m", "mcp_servers.ipam_server"],
+      "cwd": "${REPO_ROOT}/copilot-cli",
+      "env": {
+        "PYTHONPATH": "${REPO_ROOT}/copilot-cli",
+        "IPAM_FQDN": "your-ipam-instance.azurewebsites.net",
+        "IPAM_SPACE": "YourSpace",
+        "IPAM_BLOCK": "YourBlock",
+        "IPAM_ENGINE_CLIENT_ID": "your-client-id-guid"
+      }
+    }
+  }
+}

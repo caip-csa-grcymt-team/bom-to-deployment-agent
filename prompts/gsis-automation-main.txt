@@ -1,0 +1,16 @@
+copilot -p "Process the spec file at specs/2269-MIN69-RG169.xlsx using the infra-planner workflow:
+
+1. Use bom-parser-list_bom_files to confirm the file exists
+2. Use bom-parser-parse_bom with excel_path 'specs/2269-MIN69-RG169.xlsx' to extract resources
+3. Plan the network topology based on identified resources
+4. Use ipam-client-check_ipam_config to verify IPAM is ready
+5. Use ipam-client-reserve_cidr with authority_id, project_id, and calculated prefix_length
+6. Allocate subnets within the reserved CIDR
+7. Map resources to IaC toggles
+8. Read createUiDefinition.json and create a patched version with pre-filled defaults
+9. Create the output folder 'output/2269-MIN69-RG169/' if it doesn't exist
+10. Write all outputs to output/2269-MIN69-RG169/:
+    - resources.json
+    - network-plan.json
+    - vnet-params.json
+    - createUiDefinition.json (patched)" --model claude-opus-4.5 --additional-mcp-config "@.copilot/mcp-config.json" --agent infra-planner --allow-all-tools --allow-all-paths

@@ -1,0 +1,571 @@
+name: Provision Infrastructure from BOM
+
+on:
+  push:
+    paths:
+      - 'specs/*.xlsx'
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      spec_file:
+        description: 'Spec file name (e.g., 2269-MIN69-RG170.xlsx)'
+        required: true
+        type: string
+
+env:
+  # Hardcoded subscription ID - will be revisited later for dynamic input
+  AZURE_SUBSCRIPTION_ID: '6a450bf1-e243-4036-8210-822c2b95d3ad'
+  # Default Azure region for resource deployment
+  AZURE_LOCATION: 'westeurope'
+
+jobs:
+  detect-spec-files:
+    name: Detect Spec Files
+    runs-on: ubuntu-latest
+    outputs:
+      spec_files: ${{ steps.detect.outputs.spec_files }}
+      has_files: ${{ steps.detect.outputs.has_files }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect new or changed spec files
+        id: detect
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - use input file
+            SPEC_FILE="${{ github.event.inputs.spec_file }}"
+            if [ -f "specs/$SPEC_FILE" ]; then
+              echo "spec_files=[\"$SPEC_FILE\"]" >> $GITHUB_OUTPUT
+              echo "has_files=true" >> $GITHUB_OUTPUT
+            else
+              echo "::error::Spec file specs/$SPEC_FILE not found"
+              echo "has_files=false" >> $GITHUB_OUTPUT
+              exit 1
+            fi
+          else
+            # Push trigger - detect changed xlsx files
+            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'specs/*.xlsx' | xargs -I {} basename {} 2>/dev/null || echo "")
+            if [ -z "$CHANGED_FILES" ]; then
+              echo "No spec files changed"
+              echo "has_files=false" >> $GITHUB_OUTPUT
+              echo "spec_files=[]" >> $GITHUB_OUTPUT
+            else
+              # Convert to JSON array
+              JSON_ARRAY=$(echo "$CHANGED_FILES" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+              echo "spec_files=$JSON_ARRAY" >> $GITHUB_OUTPUT
+              echo "has_files=true" >> $GITHUB_OUTPUT
+              echo "Detected spec files: $JSON_ARRAY"
+            fi
+          fi
+
+  provision:
+    name: Provision ${{ matrix.spec_file }}
+    needs: detect-spec-files
+    if: needs.detect-spec-files.outputs.has_files == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        spec_file: ${{ fromJson(needs.detect-spec-files.outputs.spec_files) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse spec filename
+        id: parse
+        run: |
+          # Extract filename without extension
+          FILENAME="${{ matrix.spec_file }}"
+          BASENAME="${FILENAME%.xlsx}"
+          
+          # Parse components: <project-number>-<authority-id>-<project-id>
+          # Example: 2269-MIN69-RG170
+          IFS='-' read -r PROJECT_NUMBER AUTHORITY_ID PROJECT_ID <<< "$BASENAME"
+          
+          # Validate parsed values
+          if [ -z "$PROJECT_NUMBER" ] || [ -z "$AUTHORITY_ID" ] || [ -z "$PROJECT_ID" ]; then
+            echo "::error::Failed to parse filename. Expected format: <project-number>-<authority-id>-<project-id>.xlsx"
+            echo "::error::Got: PROJECT_NUMBER=$PROJECT_NUMBER, AUTHORITY_ID=$AUTHORITY_ID, PROJECT_ID=$PROJECT_ID"
+            exit 1
+          fi
+          
+          # Set outputs
+          echo "project_number=$PROJECT_NUMBER" >> $GITHUB_OUTPUT
+          echo "authority_id=$AUTHORITY_ID" >> $GITHUB_OUTPUT
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "resource_group_name=${AUTHORITY_ID}-${PROJECT_ID}" >> $GITHUB_OUTPUT
+          
+          # Log parsed values
+          echo "   Parsed spec file: $FILENAME"
+          echo "   Project Number: $PROJECT_NUMBER"
+          echo "   Authority ID: $AUTHORITY_ID"
+          echo "   Project ID: $PROJECT_ID"
+          echo "   Resource Group: ${AUTHORITY_ID}-${PROJECT_ID}"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create Resource Group
+        id: create-rg
+        run: |
+          RG_NAME="${{ steps.parse.outputs.resource_group_name }}"
+          LOCATION="${{ env.AZURE_LOCATION }}"
+          
+          echo "Creating resource group: $RG_NAME in $LOCATION"
+          
+          # Check if resource group already exists
+          RG_EXISTS=$(az group exists --name "$RG_NAME" --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}")
+          
+          if [ "$RG_EXISTS" == "true" ]; then
+            echo "Resource group $RG_NAME already exists"
+            echo "rg_created=false" >> $GITHUB_OUTPUT
+          else
+            az group create \
+              --name "$RG_NAME" \
+              --location "$LOCATION" \
+              --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+              --tags \
+                "ProjectNumber=${{ steps.parse.outputs.project_number }}" \
+                "AuthorityId=${{ steps.parse.outputs.authority_id }}" \
+                "ProjectId=${{ steps.parse.outputs.project_id }}" \
+                "ManagedBy=GitHubActions" \
+                "Workflow=${{ github.workflow }}" \
+                "RunId=${{ github.run_id }}"
+            
+            echo "Resource group $RG_NAME created successfully"
+            echo "rg_created=true" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "rg_name=$RG_NAME" >> $GITHUB_OUTPUT
+          echo "location=$LOCATION" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Copilot CLI
+        run: |
+          npm install -g @github/copilot
+          echo "Copilot CLI installed"
+          # # Add npm global bin to PATH
+          # echo "$(npm config get prefix)/bin" >> $GITHUB_PATH
+          # # Verify installation
+          # $(npm config get prefix)/bin/copilot --version || echo "Version check completed"
+
+      - name: Install MCP Server Dependencies
+        run: |
+          pip install mcp openpyxl httpx azure-identity
+          echo "MCP server dependencies installed"
+
+      - name: Generate CI MCP Config
+        env:
+          IPAM_FQDN: ${{ vars.IPAM_FQDN }}
+          IPAM_ENGINE_CLIENT_ID: ${{ secrets.IPAM_ENGINE_CLIENT_ID }}
+          IPAM_SPACE: ${{ vars.IPAM_SPACE }}
+          IPAM_BLOCK: ${{ vars.IPAM_BLOCK }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          # Get workspace path
+          WORKSPACE="${GITHUB_WORKSPACE}"
+          
+          # Ensure .copilot directory exists (gitignored, not in repo)
+          mkdir -p .copilot
+          
+          # Get the exact Python path that was set up
+          PYTHON_CMD=$(which python)
+          echo "Using Python at: $PYTHON_CMD"
+          
+          # Generate CI-compatible MCP config using Python script
+          export PYTHON_CMD
+          python copilot-cli/scripts/generate_mcp_config.py
+          
+          echo "=== Generated MCP Config ==="
+          cat .copilot/mcp-config.json
+          
+          # Validate JSON syntax
+          echo ""
+          echo "=== Validating JSON syntax ==="
+          python -m json.tool .copilot/mcp-config.json > /dev/null && echo "✓ JSON is valid" || echo "✗ JSON is INVALID"
+
+      - name: Test MCP Servers
+        run: |
+          echo "=== Testing MCP Server Imports ==="
+          cd copilot-cli
+          
+          echo "Testing bom_server..."
+          python -c "from mcp_servers import bom_server; print('✓ bom_server imports successfully')" || { echo "✗ bom_server import failed"; exit 1; }
+          
+          echo "Testing ipam_server..."
+          python -c "from mcp_servers import ipam_server; print('✓ ipam_server imports successfully')" || { echo "✗ ipam_server import failed"; exit 1; }
+          
+          echo ""
+          echo "=== Verifying MCP Config ==="
+          ls -la ../.copilot/
+          cat ../.copilot/mcp-config.json
+          
+          echo ""
+          echo "=== Python Environment ==="
+          which python
+          python --version
+          
+          echo ""
+          echo "MCP servers ready for Copilot CLI"
+
+      - name: Run Copilot CLI Infrastructure Planning
+        id: copilot-plan
+        timeout-minutes: 10
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          IPAM_FQDN: ${{ vars.IPAM_FQDN }}
+          IPAM_ENGINE_CLIENT_ID: ${{ secrets.IPAM_ENGINE_CLIENT_ID }}
+          IPAM_SPACE: ${{ vars.IPAM_SPACE }}
+          IPAM_BLOCK: ${{ vars.IPAM_BLOCK }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          SPEC_FILE="specs/${{ matrix.spec_file }}"
+          BASENAME="${{ matrix.spec_file }}"
+          BASENAME="${BASENAME%.xlsx}"
+          OUTPUT_DIR="output/${BASENAME}"
+          AUTHORITY_ID="${{ steps.parse.outputs.authority_id }}"
+          PROJECT_ID="${{ steps.parse.outputs.project_id }}"
+          
+          echo "Running Copilot CLI for: $SPEC_FILE"
+          echo "Output directory: $OUTPUT_DIR"
+          
+          # Create output directory
+          mkdir -p "$OUTPUT_DIR"
+          
+          # Build prompt from template file with variable substitution
+          PROMPT=$(cat copilot-cli/PROMPT_TEMPLATE.txt | \
+            sed "s|{{SPEC_FILE}}|${SPEC_FILE}|g" | \
+            sed "s|{{OUTPUT_DIR}}|${OUTPUT_DIR}|g" | \
+            sed "s|{{AUTHORITY_ID}}|${AUTHORITY_ID}|g" | \
+            sed "s|{{PROJECT_ID}}|${PROJECT_ID}|g")
+          
+          echo "=== Pre-flight Check ==="
+          echo "MCP Config exists: $(test -f .copilot/mcp-config.json && echo YES || echo NO)"
+          echo "Copilot CLI version: $(copilot --version)"
+          echo ""
+                    
+          echo "=== Running Copilot CLI ==="
+          
+          # Run Copilot CLI
+          copilot -p "$PROMPT" \
+            --model claude-opus-4.5 \
+            --additional-mcp-config "@.copilot/mcp-config.json" \
+            --agent infra-planner \
+            --allow-all-tools \
+            --allow-all-paths \
+            --log-level debug \
+            2>&1 | tee copilot-output.log
+          
+          echo ""
+          echo "=== Copilot CLI Complete ==="
+          
+          # Verify outputs were created
+          if [ -f "${OUTPUT_DIR}/createUiDefinition.json" ]; then
+            echo "createUiDefinition.json generated"
+            echo "ui_definition_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "createUiDefinition.json not found"
+            echo "ui_definition_created=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [ -f "${OUTPUT_DIR}/network-plan.json" ]; then
+            echo "network-plan.json generated"
+            echo "network_plan_created=true" >> $GITHUB_OUTPUT
+          else
+            echo "network-plan.json not found"
+            echo "network_plan_created=false" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+
+      - name: Validate VNet Params
+        id: validate-vnet
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+          VNET_PARAMS="${OUTPUT_DIR}/vnet-params.json"
+          
+          echo "=== Validating VNet Parameters ==="
+          echo "Output directory: $OUTPUT_DIR"
+          echo "VNet params file: $VNET_PARAMS"
+          
+          # List what files exist in output directory
+          echo ""
+          echo "=== Files in output directory ==="
+          ls -la "$OUTPUT_DIR" || echo "Directory not found"
+          
+          if [ ! -f "$VNET_PARAMS" ]; then
+            echo "::error::vnet-params.json not found at $VNET_PARAMS"
+            echo "vnet_valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+                    
+          # Validate required fields
+          VNET_NAME=$(jq -r '.vnetName // empty' "$VNET_PARAMS")
+          VNET_PREFIX=$(jq -r '.vnetAddressPrefix // empty' "$VNET_PARAMS")
+          SUBNET_COUNT=$(jq '.subnets | length' "$VNET_PARAMS" 2>/dev/null || echo "0")
+          
+          if [ -z "$VNET_NAME" ]; then
+            echo "::error::vnetName is missing in vnet-params.json"
+            echo "vnet_valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          if [ -z "$VNET_PREFIX" ]; then
+            echo "::error::vnetAddressPrefix is missing in vnet-params.json"
+            echo "vnet_valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          if [ "$SUBNET_COUNT" -eq 0 ]; then
+            echo "::error::No subnets defined in vnet-params.json"
+            echo "vnet_valid=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "VNet Name: $VNET_NAME"
+          echo "VNet Prefix: $VNET_PREFIX"
+          echo "Subnet Count: $SUBNET_COUNT"
+          
+          # Check for IPAM reservation (standardized field name)
+          IPAM_ID=$(jq -r '.ipamReservation.id // empty' "$VNET_PARAMS")
+          IPAM_CIDR=$(jq -r '.ipamReservation.cidr // empty' "$VNET_PARAMS")
+          if [ -n "$IPAM_ID" ]; then
+            echo "IPAM Reservation ID: $IPAM_ID"
+            echo "IPAM CIDR: $IPAM_CIDR"
+          else
+            echo "Warning: No IPAM reservation found in ipamReservation.id"
+          fi
+          
+          echo "vnet_valid=true" >> $GITHUB_OUTPUT
+          echo "vnet_name=$VNET_NAME" >> $GITHUB_OUTPUT
+          echo "vnet_prefix=$VNET_PREFIX" >> $GITHUB_OUTPUT
+          echo "subnet_count=$SUBNET_COUNT" >> $GITHUB_OUTPUT
+          echo "ipam_id=$IPAM_ID" >> $GITHUB_OUTPUT
+
+      - name: Deploy VNet and Subnets
+        if: steps.validate-vnet.outputs.vnet_valid == 'true'
+        id: deploy-vnet
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+          VNET_PARAMS="${OUTPUT_DIR}/vnet-params.json"
+          RG_NAME="${{ steps.create-rg.outputs.rg_name }}"
+          
+          echo "=== Deploying VNet to Resource Group: $RG_NAME ==="
+          
+          # Extract values from vnet-params.json
+          VNET_NAME=$(jq -r '.vnetName' "$VNET_PARAMS")
+          VNET_PREFIX=$(jq -r '.vnetAddressPrefix' "$VNET_PARAMS")
+          LOCATION=$(jq -r '.location // "westeurope"' "$VNET_PARAMS")
+          
+          # Transform subnets to subnetConfigs format (keep only addressPrefix and usage)
+          SUBNET_CONFIGS=$(jq -c '[.subnets[] | {addressPrefix, usage}]' "$VNET_PARAMS")
+          
+          # Build tags from vnet-params.json or use defaults
+          # Add IPAM reservation tag for automatic association if available
+          # Uses X-IPAM-RES-ID (primary format returned by IPAM API, takes priority in coalesce lookup)
+          IPAM_RES_ID="${{ steps.validate-vnet.outputs.ipam_id }}"
+          if [ -n "$IPAM_RES_ID" ]; then
+            # Merge X-IPAM-RES-ID into tags (matches IPAM API response format)
+            TAGS=$(jq -c --arg ipamId "$IPAM_RES_ID" '.tags // {} | . + {"X-IPAM-RES-ID": $ipamId}' "$VNET_PARAMS")
+            echo "IPAM tag added: X-IPAM-RES-ID=$IPAM_RES_ID"
+          else
+            TAGS=$(jq -c '.tags // {}' "$VNET_PARAMS")
+          fi
+          
+          echo "VNet Name: $VNET_NAME"
+          echo "VNet Prefix: $VNET_PREFIX"
+          echo "Location: $LOCATION"
+          echo "Subnet Configs: $SUBNET_CONFIGS"
+          echo "Tags: $TAGS"
+          
+          # Deploy using the existing networkDeployment.module.bicep
+          # useExistingVnet=false because we're creating the VNet here (not referencing existing)
+          echo ""
+          echo "=== Running Bicep Deployment ==="
+          
+          az deployment group create \
+            --resource-group "$RG_NAME" \
+            --template-file modules/Networking/networkDeployment.module.bicep \
+            --parameters \
+              vnetName="$VNET_NAME" \
+              vnetAddressPrefix="[\"$VNET_PREFIX\"]" \
+              subnetConfigs="$SUBNET_CONFIGS" \
+              tags="$TAGS" \
+              location="$LOCATION" \
+              useExistingVnet=false \
+            --name "vnet-deploy-$(date +%Y%m%d%H%M%S)" \
+            --output json > deployment-output.json
+          
+          DEPLOYMENT_STATUS=$?
+          
+          if [ $DEPLOYMENT_STATUS -eq 0 ]; then
+            echo "VNet deployment successful"
+            echo "vnet_deployed=true" >> $GITHUB_OUTPUT
+            
+            # Extract outputs
+            VNET_ID=$(jq -r '.properties.outputs.vnetId.value // empty' deployment-output.json)
+            echo "vnet_id=$VNET_ID" >> $GITHUB_OUTPUT
+            
+            # Show subnet info
+            echo ""
+            echo "=== Deployed Subnets ==="
+            jq -r '.properties.outputs.subnets.value[] | "  - \(.name): \(.properties.addressPrefix)"' deployment-output.json || true
+          else
+            echo "::error::VNet deployment failed"
+            echo "vnet_deployed=false" >> $GITHUB_OUTPUT
+            cat deployment-output.json
+            exit 1
+          fi
+
+      - name: Create Template Spec
+        id: template-spec
+        if: steps.deploy-vnet.outputs.vnet_deployed == 'true'
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+          RG_NAME="${{ steps.create-rg.outputs.rg_name }}"
+          AUTHORITY_ID="${{ steps.parse.outputs.authority_id }}"
+          PROJECT_ID="${{ steps.parse.outputs.project_id }}"
+          PROJECT_NUMBER="${{ steps.parse.outputs.project_number }}"
+          
+          # Template Spec naming
+          TEMPLATE_SPEC_NAME="GSIS-Deployment-${AUTHORITY_ID}-${PROJECT_ID}"
+          VERSION="1.0.$(date +%Y%m%d%H%M)"
+          
+          echo "=== Creating Template Spec ==="
+          echo "Template Spec Name: $TEMPLATE_SPEC_NAME"
+          echo "Version: $VERSION"
+          echo "Resource Group: $RG_NAME"
+          
+          # Check if createUiDefinition.json was generated
+          UI_DEFINITION="${OUTPUT_DIR}/createUiDefinition.json"
+          if [ ! -f "$UI_DEFINITION" ]; then
+            echo "Warning: createUiDefinition.json not found, using original"
+            UI_DEFINITION="createUiDefinition.json"
+          fi
+          
+          echo "Template file: azure.deploy.bicep"
+          echo "UI Definition: $UI_DEFINITION"
+          
+          # Create the Template Spec with UI definition
+          az ts create \
+            --name "$TEMPLATE_SPEC_NAME" \
+            --version "$VERSION" \
+            --resource-group "$RG_NAME" \
+            --location "${{ env.AZURE_LOCATION }}" \
+            --template-file azure.deploy.bicep \
+            --ui-form-definition "$UI_DEFINITION" \
+            --description "Infrastructure template for project ${PROJECT_NUMBER}-${AUTHORITY_ID}-${PROJECT_ID}" \
+            --tags \
+              project="${PROJECT_NUMBER}" \
+              authority="${AUTHORITY_ID}" \
+              projectId="${PROJECT_ID}" \
+              createdBy="gsis-automation" \
+            --output json > template-spec-output.json
+          
+          TS_STATUS=$?
+          
+          if [ $TS_STATUS -eq 0 ]; then
+            echo "Template Spec created successfully"
+            echo "template_spec_created=true" >> $GITHUB_OUTPUT
+            
+            # Extract Template Spec ID
+            TS_ID=$(jq -r '.id // empty' template-spec-output.json)
+            TS_VERSION_ID=$(jq -r '.versions[0].id // .id' template-spec-output.json)
+            
+            echo "template_spec_name=$TEMPLATE_SPEC_NAME" >> $GITHUB_OUTPUT
+            echo "template_spec_version=$VERSION" >> $GITHUB_OUTPUT
+            echo "template_spec_id=$TS_ID" >> $GITHUB_OUTPUT
+            
+            echo ""
+            echo "=== Template Spec Details ==="
+            echo "ID: $TS_ID"
+            echo "Version: $VERSION"
+            
+            # Generate deployment URL
+            SUBSCRIPTION_ID="${{ env.AZURE_SUBSCRIPTION_ID }}"
+            PORTAL_URL="https://portal.azure.com/#view/HubsExtension/TemplateSpecVersionBlade/id/%2Fsubscriptions%2F${SUBSCRIPTION_ID}%2FresourceGroups%2F${RG_NAME}%2Fproviders%2FMicrosoft.Resources%2FtemplateSpecs%2F${TEMPLATE_SPEC_NAME}%2Fversions%2F${VERSION}"
+            echo ""
+            echo "Portal URL: $PORTAL_URL"
+            echo "template_spec_portal_url=$PORTAL_URL" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Template Spec creation failed"
+            echo "template_spec_created=false" >> $GITHUB_OUTPUT
+            cat template-spec-output.json
+            exit 1
+          fi
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-plan-${{ steps.parse.outputs.project_number }}-${{ steps.parse.outputs.authority_id }}-${{ steps.parse.outputs.project_id }}
+          path: ${{ steps.copilot-plan.outputs.output_dir }}/
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "## Provisioning Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Resource Group" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Spec File | \`${{ matrix.spec_file }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Project Number | ${{ steps.parse.outputs.project_number }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Authority ID | ${{ steps.parse.outputs.authority_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Project ID | ${{ steps.parse.outputs.project_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | \`${{ steps.create-rg.outputs.rg_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Location | ${{ steps.create-rg.outputs.location }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| RG Created | ${{ steps.create-rg.outputs.rg_created }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Subscription | \`${{ env.AZURE_SUBSCRIPTION_ID }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Copilot CLI Infrastructure Planning" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| createUiDefinition.json | ${{ steps.copilot-plan.outputs.ui_definition_created }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| network-plan.json | ${{ steps.copilot-plan.outputs.network_plan_created }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Output Directory | \`${{ steps.copilot-plan.outputs.output_dir }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### VNet Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| VNet Valid | ${{ steps.validate-vnet.outputs.vnet_valid }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| VNet Name | \`${{ steps.validate-vnet.outputs.vnet_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| VNet Prefix | \`${{ steps.validate-vnet.outputs.vnet_prefix }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Subnet Count | ${{ steps.validate-vnet.outputs.subnet_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployed | ${{ steps.deploy-vnet.outputs.vnet_deployed }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| VNet ID | \`${{ steps.deploy-vnet.outputs.vnet_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| IPAM Reservation ID | \`${{ steps.validate-vnet.outputs.ipam_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| IPAM Tag | \`X-IPAM-RES-ID\` (auto-association) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Template Spec" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Created | ${{ steps.template-spec.outputs.template_spec_created }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Name | \`${{ steps.template-spec.outputs.template_spec_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Version | \`${{ steps.template-spec.outputs.template_spec_version }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.template-spec.outputs.template_spec_portal_url }}" ]; then
+            echo "**[Open Template Spec in Azure Portal](${{ steps.template-spec.outputs.template_spec_portal_url }})**" >> $GITHUB_STEP_SUMMARY
+          fi

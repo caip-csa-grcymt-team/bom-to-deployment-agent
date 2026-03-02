@@ -1,0 +1,32 @@
+IMPORTANT: You MUST use the MCP tools for this task. Do NOT use shell commands, Python scripts, or pandas.
+
+FIRST: Read copilot-cli/OUTPUT_SCHEMAS.md for the exact JSON schemas you must use for output files.
+
+Process the spec file using the infra-planner workflow:
+
+1. REQUIRED: Use bom-parser-list_bom_files to confirm the file exists in the specs directory
+2. REQUIRED: Use bom-parser-parse_bom to extract resources (do NOT use pandas or any other method)
+3. Plan the network topology based on the parsed resources
+4. REQUIRED: Use ipam-client-check_ipam_config to verify IPAM is ready
+5. REQUIRED: Use ipam-client-reserve_cidr with the calculated prefix_length
+6. Allocate subnets within the reserved CIDR from IPAM (do NOT use placeholder CIDRs)
+7. Write all outputs to the output directory following the schemas in copilot-cli/OUTPUT_SCHEMAS.md:
+   - output/resources.json — Identified Azure resources
+   - output/network-plan.json — Subnet allocation plan
+   - output/vnet-params.json — VNet configuration
+
+Note: These outputs are consumed by the infra-provisioner agent to generate AVM-based Bicep templates.
+
+CRITICAL for vnet-params.json:
+- vnetName: MUST follow the format "{AUTHORITY_ID}-{PROJECT_ID}-Vnet" (e.g., "MIN69-RG170-Vnet")
+  - Use the Authority ID and Project ID from the context below
+  - Do NOT use formats like "vnet-MIN69-RG170" or other variations
+- vnetAddressPrefix: must be exactly this field name  
+- ipamReservation.id: must contain the reservation ID from reserve_cidr
+- ipamReservation.cidr: must contain the CIDR from reserve_cidr
+
+Context:
+- Spec file: {{SPEC_FILE}}
+- Output directory: {{OUTPUT_DIR}}
+- Authority ID: {{AUTHORITY_ID}}
+- Project ID: {{PROJECT_ID}}

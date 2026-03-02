@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "bom-parser": {
+      "command": "C:/Users/youruser/repos/gsis-automation/.venv/Scripts/python.exe",
+      "args": ["-m", "mcp_servers.bom_server"],
+      "cwd": "C:/Users/youruser/repos/gsis-automation/copilot-cli",
+      "env": {
+        "PYTHONPATH": "C:/Users/youruser/repos/gsis-automation/agent/src;C:/Users/youruser/repos/gsis-automation/copilot-cli"
+      }
+    },
+    "ipam-client": {
+      "command": "C:/Users/youruser/repos/gsis-automation/.venv/Scripts/python.exe",
+      "args": ["-m", "mcp_servers.ipam_server"],
+      "cwd": "C:/Users/youruser/repos/gsis-automation/copilot-cli",
+      "env": {
+        "PYTHONPATH": "C:/Users/youruser/repos/gsis-automation/agent/src;C:/Users/youruser/repos/gsis-automation/copilot-cli",
+        "IPAM_FQDN": "ipam.contoso.com",
+        "IPAM_SPACE": "default",
+        "IPAM_BLOCK": "azure-production",
+        "IPAM_ENGINE_CLIENT_ID": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "avm-resolver": {
+      "command": "C:/Users/youruser/repos/gsis-automation/.venv/Scripts/python.exe",
+      "args": ["-m", "mcp_servers.avm_resolver_server"],
+      "cwd": "C:/Users/youruser/repos/gsis-automation/copilot-cli",
+      "env": {
+        "PYTHONPATH": "C:/Users/youruser/repos/gsis-automation/agent/src;C:/Users/youruser/repos/gsis-automation/copilot-cli"
+      }
+    }
+  }
+}

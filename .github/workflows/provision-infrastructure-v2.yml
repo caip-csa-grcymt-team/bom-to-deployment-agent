@@ -1,0 +1,488 @@
+name: Provision Infrastructure v2 (AVM)
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec_file:
+        description: 'Spec file name (e.g., 2269-MIN69-RG170.xlsx)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - dev
+          - stg
+          - prd
+        default: dev
+      location:
+        description: 'Azure region'
+        required: false
+        type: string
+        default: 'westeurope'
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  provision:
+    name: Provision ${{ github.event.inputs.spec_file }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      # ---------------------------------------------------------------
+      # Stage 1: Setup
+      # ---------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse spec filename
+        id: parse
+        run: |
+          FILENAME="${{ github.event.inputs.spec_file }}"
+          BASENAME="${FILENAME%.xlsx}"
+
+          # Parse components: <project-number>-<authority-id>-<project-id>
+          IFS='-' read -r PROJECT_NUMBER AUTHORITY_ID PROJECT_ID <<< "$BASENAME"
+
+          if [ -z "$PROJECT_NUMBER" ] || [ -z "$AUTHORITY_ID" ] || [ -z "$PROJECT_ID" ]; then
+            echo "::error::Failed to parse filename. Expected format: <project-number>-<authority-id>-<project-id>.xlsx"
+            exit 1
+          fi
+
+          ENVIRONMENT="${{ github.event.inputs.environment }}"
+          LOCATION="${{ github.event.inputs.location }}"
+          APPLICATION_NAME="$(echo "${AUTHORITY_ID}${PROJECT_ID}" | tr '[:upper:]' '[:lower:]')"
+
+          # Region abbreviation for naming convention
+          case "$LOCATION" in
+            westeurope) REGION_CODE="weu" ;;
+            swedencentral) REGION_CODE="swe" ;;
+            northeurope) REGION_CODE="neu" ;;
+            *) REGION_CODE="$(echo "$LOCATION" | head -c 3)" ;;
+          esac
+
+          # Resource group follows new naming convention
+          RESOURCE_GROUP_NAME="rg-${APPLICATION_NAME}-${ENVIRONMENT}-${REGION_CODE}-01"
+
+          echo "project_number=$PROJECT_NUMBER" >> $GITHUB_OUTPUT
+          echo "authority_id=$AUTHORITY_ID" >> $GITHUB_OUTPUT
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "application_name=$APPLICATION_NAME" >> $GITHUB_OUTPUT
+          echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+          echo "location=$LOCATION" >> $GITHUB_OUTPUT
+          echo "region_code=$REGION_CODE" >> $GITHUB_OUTPUT
+          echo "resource_group_name=$RESOURCE_GROUP_NAME" >> $GITHUB_OUTPUT
+
+          echo "Parsed spec file: $FILENAME"
+          echo "  Project Number: $PROJECT_NUMBER"
+          echo "  Authority ID: $AUTHORITY_ID"
+          echo "  Project ID: $PROJECT_ID"
+          echo "  Application Name: $APPLICATION_NAME"
+          echo "  Environment: $ENVIRONMENT"
+          echo "  Location: $LOCATION"
+          echo "  Resource Group: $RESOURCE_GROUP_NAME"
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      # ---------------------------------------------------------------
+      # Stage 2: Create Resource Group
+      # ---------------------------------------------------------------
+      - name: Create Resource Group
+        id: create-rg
+        run: |
+          RG_NAME="${{ steps.parse.outputs.resource_group_name }}"
+          LOCATION="${{ steps.parse.outputs.location }}"
+
+          echo "Creating resource group: $RG_NAME in $LOCATION"
+
+          RG_EXISTS=$(az group exists --name "$RG_NAME" --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}")
+
+          if [ "$RG_EXISTS" == "true" ]; then
+            echo "Resource group $RG_NAME already exists"
+            echo "rg_created=false" >> $GITHUB_OUTPUT
+          else
+            az group create \
+              --name "$RG_NAME" \
+              --location "$LOCATION" \
+              --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+              --tags \
+                "ProjectNumber=${{ steps.parse.outputs.project_number }}" \
+                "AuthorityId=${{ steps.parse.outputs.authority_id }}" \
+                "ProjectId=${{ steps.parse.outputs.project_id }}" \
+                "Environment=${{ steps.parse.outputs.environment }}" \
+                "ManagedBy=GitHubActions" \
+                "Workflow=${{ github.workflow }}" \
+                "RunId=${{ github.run_id }}"
+            echo "Resource group $RG_NAME created successfully"
+            echo "rg_created=true" >> $GITHUB_OUTPUT
+          fi
+
+          echo "rg_name=$RG_NAME" >> $GITHUB_OUTPUT
+
+      # ---------------------------------------------------------------
+      # Stage 3: Setup Tools
+      # ---------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Copilot CLI
+        run: |
+          npm install -g @github/copilot
+          echo "Copilot CLI installed"
+
+      - name: Install MCP Server Dependencies
+        run: |
+          pip install mcp openpyxl httpx azure-identity pydantic
+          echo "MCP server dependencies installed"
+
+      - name: Generate CI MCP Config
+        env:
+          IPAM_FQDN: ${{ vars.IPAM_FQDN }}
+          IPAM_ENGINE_CLIENT_ID: ${{ secrets.IPAM_ENGINE_CLIENT_ID }}
+          IPAM_SPACE: ${{ vars.IPAM_SPACE }}
+          IPAM_BLOCK: ${{ vars.IPAM_BLOCK }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          WORKSPACE="${GITHUB_WORKSPACE}"
+          mkdir -p .copilot
+
+          PYTHON_CMD=$(which python)
+          echo "Using Python at: $PYTHON_CMD"
+          export PYTHON_CMD
+
+          python copilot-cli/scripts/generate_mcp_config.py
+
+          echo "=== Generated MCP Config ==="
+          cat .copilot/mcp-config.json
+
+          echo ""
+          echo "=== Validating JSON syntax ==="
+          python -m json.tool .copilot/mcp-config.json > /dev/null && echo "✓ JSON is valid" || echo "✗ JSON is INVALID"
+
+      - name: Test MCP Servers
+        run: |
+          echo "=== Testing MCP Server Imports ==="
+          cd copilot-cli
+
+          echo "Testing bom_server..."
+          python -c "from mcp_servers import bom_server; print('✓ bom_server imports successfully')" || { echo "✗ bom_server import failed"; exit 1; }
+
+          echo "Testing ipam_server..."
+          python -c "from mcp_servers import ipam_server; print('✓ ipam_server imports successfully')" || { echo "✗ ipam_server import failed"; exit 1; }
+
+          echo "Testing avm_resolver_server..."
+          python -c "from mcp_servers import avm_resolver_server; print('✓ avm_resolver_server imports successfully')" || { echo "✗ avm_resolver_server import failed"; exit 1; }
+
+          echo ""
+          echo "=== Verifying MCP Config ==="
+          ls -la ../.copilot/
+          cat ../.copilot/mcp-config.json
+
+          echo ""
+          echo "MCP servers ready for Copilot CLI"
+
+      # ---------------------------------------------------------------
+      # Stage 4: Run Infra Planner Agent
+      # ---------------------------------------------------------------
+      - name: Run Copilot CLI Infrastructure Planning
+        id: copilot-plan
+        timeout-minutes: 10
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+          IPAM_FQDN: ${{ vars.IPAM_FQDN }}
+          IPAM_ENGINE_CLIENT_ID: ${{ secrets.IPAM_ENGINE_CLIENT_ID }}
+          IPAM_SPACE: ${{ vars.IPAM_SPACE }}
+          IPAM_BLOCK: ${{ vars.IPAM_BLOCK }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        run: |
+          SPEC_FILE="specs/${{ github.event.inputs.spec_file }}"
+          BASENAME="${{ github.event.inputs.spec_file }}"
+          BASENAME="${BASENAME%.xlsx}"
+          OUTPUT_DIR="output/${BASENAME}"
+          AUTHORITY_ID="${{ steps.parse.outputs.authority_id }}"
+          PROJECT_ID="${{ steps.parse.outputs.project_id }}"
+
+          echo "Running Copilot CLI infra-planner for: $SPEC_FILE"
+          echo "Output directory: $OUTPUT_DIR"
+
+          mkdir -p "$OUTPUT_DIR"
+
+          # Build prompt from template with variable substitution
+          PROMPT=$(cat copilot-cli/PROMPT_TEMPLATE.txt | \
+            sed "s|{{SPEC_FILE}}|${SPEC_FILE}|g" | \
+            sed "s|{{OUTPUT_DIR}}|${OUTPUT_DIR}|g" | \
+            sed "s|{{AUTHORITY_ID}}|${AUTHORITY_ID}|g" | \
+            sed "s|{{PROJECT_ID}}|${PROJECT_ID}|g")
+
+          echo "=== Pre-flight Check ==="
+          echo "MCP Config exists: $(test -f .copilot/mcp-config.json && echo YES || echo NO)"
+          echo "Copilot CLI version: $(copilot --version)"
+
+          echo "=== Running Copilot CLI (infra-planner) ==="
+
+          copilot -p "$PROMPT" \
+            --model claude-opus-4.5 \
+            --additional-mcp-config "@.copilot/mcp-config.json" \
+            --agent infra-planner \
+            --allow-all-tools \
+            --allow-all-paths \
+            --log-level debug \
+            2>&1 | tee copilot-planner-output.log
+
+          echo "=== Copilot CLI (infra-planner) Complete ==="
+
+          echo "output_dir=$OUTPUT_DIR" >> $GITHUB_OUTPUT
+
+      - name: Validate Planner Outputs
+        id: validate-planner
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+
+          echo "=== Validating Planner Outputs ==="
+          echo "Output directory: $OUTPUT_DIR"
+          echo ""
+          echo "=== Files in output directory ==="
+          ls -la "$OUTPUT_DIR" || { echo "::error::Output directory not found"; exit 1; }
+
+          VALID=true
+
+          # Validate resources.json
+          if [ ! -f "${OUTPUT_DIR}/resources.json" ]; then
+            echo "::error::resources.json not found"
+            VALID=false
+          else
+            RESOURCE_COUNT=$(jq '.resources | length' "${OUTPUT_DIR}/resources.json" 2>/dev/null || echo "0")
+            echo "resources.json: $RESOURCE_COUNT resources found"
+            if [ "$RESOURCE_COUNT" -eq 0 ]; then
+              echo "::error::resources.json contains no resources"
+              VALID=false
+            fi
+          fi
+
+          # Validate network-plan.json
+          if [ ! -f "${OUTPUT_DIR}/network-plan.json" ]; then
+            echo "::error::network-plan.json not found"
+            VALID=false
+          else
+            SUBNET_COUNT=$(jq '.subnets | length' "${OUTPUT_DIR}/network-plan.json" 2>/dev/null || echo "0")
+            echo "network-plan.json: $SUBNET_COUNT subnets found"
+          fi
+
+          # Validate vnet-params.json
+          if [ ! -f "${OUTPUT_DIR}/vnet-params.json" ]; then
+            echo "::error::vnet-params.json not found"
+            VALID=false
+          else
+            VNET_PREFIX=$(jq -r '.vnetAddressPrefix // empty' "${OUTPUT_DIR}/vnet-params.json")
+            IPAM_ID=$(jq -r '.ipamReservation.id // empty' "${OUTPUT_DIR}/vnet-params.json")
+            echo "vnet-params.json: prefix=$VNET_PREFIX, ipamId=$IPAM_ID"
+            if [ -z "$VNET_PREFIX" ]; then
+              echo "::error::vnetAddressPrefix missing in vnet-params.json"
+              VALID=false
+            fi
+          fi
+
+          if [ "$VALID" != "true" ]; then
+            echo "::error::Planner output validation failed"
+            exit 1
+          fi
+
+          echo "planner_valid=true" >> $GITHUB_OUTPUT
+          echo "✓ All planner outputs validated"
+
+      # ---------------------------------------------------------------
+      # Stage 5: Run Infra Provisioner Agent
+      # ---------------------------------------------------------------
+      - name: Run Copilot CLI Infrastructure Provisioning
+        id: copilot-provision
+        timeout-minutes: 15
+        env:
+          COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_TOKEN }}
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+          APPLICATION_NAME="${{ steps.parse.outputs.application_name }}"
+          ENVIRONMENT="${{ steps.parse.outputs.environment }}"
+          LOCATION="${{ steps.parse.outputs.location }}"
+
+          echo "Running Copilot CLI infra-provisioner"
+          echo "  Output directory: $OUTPUT_DIR"
+          echo "  Application: $APPLICATION_NAME"
+          echo "  Environment: $ENVIRONMENT"
+          echo "  Location: $LOCATION"
+
+          # Build prompt from provisioner template with variable substitution
+          PROMPT=$(cat copilot-cli/PROVISIONER_PROMPT_TEMPLATE.txt | \
+            sed "s|{{OUTPUT_DIR}}|${OUTPUT_DIR}|g" | \
+            sed "s|{{APPLICATION_NAME}}|${APPLICATION_NAME}|g" | \
+            sed "s|{{ENVIRONMENT}}|${ENVIRONMENT}|g" | \
+            sed "s|{{LOCATION}}|${LOCATION}|g")
+
+          echo "=== Running Copilot CLI (infra-provisioner) ==="
+
+          copilot -p "$PROMPT" \
+            --model claude-opus-4.5 \
+            --additional-mcp-config "@.copilot/mcp-config.json" \
+            --agent infra-provisioner \
+            --allow-all-tools \
+            --allow-all-paths \
+            --log-level debug \
+            2>&1 | tee copilot-provisioner-output.log
+
+          echo "=== Copilot CLI (infra-provisioner) Complete ==="
+
+          # Verify outputs
+          if [ ! -f "${OUTPUT_DIR}/main.bicep" ]; then
+            echo "::error::main.bicep not generated"
+            exit 1
+          fi
+
+          if [ ! -f "${OUTPUT_DIR}/main.bicepparam" ]; then
+            echo "::error::main.bicepparam not generated"
+            exit 1
+          fi
+
+          BICEP_LINES=$(wc -l < "${OUTPUT_DIR}/main.bicep")
+          echo "main.bicep generated: $BICEP_LINES lines"
+          echo "bicep_generated=true" >> $GITHUB_OUTPUT
+
+      # ---------------------------------------------------------------
+      # Stage 6: Validate Bicep
+      # ---------------------------------------------------------------
+      - name: Validate Generated Bicep
+        id: validate-bicep
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+
+          echo "=== Installing Bicep CLI ==="
+          az bicep install
+
+          echo ""
+          echo "=== Restoring AVM Module References ==="
+          az bicep restore --file "${OUTPUT_DIR}/main.bicep"
+
+          echo ""
+          echo "=== Building (Compiling) Bicep ==="
+          az bicep build --file "${OUTPUT_DIR}/main.bicep"
+          echo "✓ Bicep compilation successful"
+
+          echo ""
+          echo "=== Running What-If Deployment Preview ==="
+          az deployment group what-if \
+            --resource-group "${{ steps.create-rg.outputs.rg_name }}" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --template-file "${OUTPUT_DIR}/main.bicep" \
+            --parameters "${OUTPUT_DIR}/main.bicepparam" \
+            2>&1 | tee what-if-output.log
+
+          echo ""
+          echo "bicep_valid=true" >> $GITHUB_OUTPUT
+          echo "✓ Bicep validation passed"
+
+      # ---------------------------------------------------------------
+      # Stage 7: Deploy Bicep
+      # ---------------------------------------------------------------
+      - name: Deploy Infrastructure
+        id: deploy
+        run: |
+          OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
+          RG_NAME="${{ steps.create-rg.outputs.rg_name }}"
+          DEPLOYMENT_NAME="deploy-${{ github.run_id }}"
+
+          echo "=== Deploying Infrastructure ==="
+          echo "  Resource Group: $RG_NAME"
+          echo "  Deployment Name: $DEPLOYMENT_NAME"
+
+          az deployment group create \
+            --resource-group "$RG_NAME" \
+            --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
+            --template-file "${OUTPUT_DIR}/main.bicep" \
+            --parameters "${OUTPUT_DIR}/main.bicepparam" \
+            --mode Incremental \
+            --name "$DEPLOYMENT_NAME" \
+            --output json > deployment-output.json
+
+          DEPLOYMENT_STATUS=$?
+
+          if [ $DEPLOYMENT_STATUS -eq 0 ]; then
+            echo "✓ Infrastructure deployment successful"
+            echo "deployed=true" >> $GITHUB_OUTPUT
+            echo "deployment_name=$DEPLOYMENT_NAME" >> $GITHUB_OUTPUT
+
+            # Show deployment outputs
+            echo ""
+            echo "=== Deployment Outputs ==="
+            jq '.properties.outputs' deployment-output.json || true
+          else
+            echo "::error::Infrastructure deployment failed"
+            echo "deployed=false" >> $GITHUB_OUTPUT
+            cat deployment-output.json
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------
+      # Stage 8: Artifacts and Summary
+      # ---------------------------------------------------------------
+      - name: Upload Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-${{ steps.parse.outputs.application_name }}-${{ steps.parse.outputs.environment }}
+          path: |
+            ${{ steps.copilot-plan.outputs.output_dir }}/
+            copilot-planner-output.log
+            copilot-provisioner-output.log
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Provisioning Summary (v2 — AVM)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Configuration" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Spec File | \`${{ github.event.inputs.spec_file }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Application Name | \`${{ steps.parse.outputs.application_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ steps.parse.outputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Location | \`${{ steps.parse.outputs.location }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource Group | \`${{ steps.create-rg.outputs.rg_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Subscription | \`${{ env.AZURE_SUBSCRIPTION_ID }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Pipeline Stages" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Create Resource Group | ${{ steps.create-rg.outputs.rg_created && '✅ Created' || '⏭️ Exists' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Infra Planner | ${{ steps.validate-planner.outputs.planner_valid == 'true' && '✅ Passed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Infra Provisioner | ${{ steps.copilot-provision.outputs.bicep_generated == 'true' && '✅ Generated' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bicep Validation | ${{ steps.validate-bicep.outputs.bicep_valid == 'true' && '✅ Valid' || '❌ Invalid' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment | ${{ steps.deploy.outputs.deployed == 'true' && '✅ Deployed' || '❌ Failed' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.deploy.outputs.deployed }}" == "true" ]; then
+            echo "### Deployment" >> $GITHUB_STEP_SUMMARY
+            echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Deployment Name | \`${{ steps.deploy.outputs.deployment_name }}\` |" >> $GITHUB_STEP_SUMMARY
+            echo "| Mode | Incremental |" >> $GITHUB_STEP_SUMMARY
+          fi

@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "bom-parser": {
+      "command": "python",
+      "args": ["-m", "mcp_servers.bom_server"],
+      "cwd": "${COPILOT_CLI_PATH}",
+      "env": {
+        "PYTHONPATH": "${AGENT_SRC_PATH};${COPILOT_CLI_PATH}",
+        "WORKSPACE_ROOT": "${WORKSPACE_ROOT}"
+      }
+    },
+    "ipam-client": {
+      "command": "python",
+      "args": ["-m", "mcp_servers.ipam_server"],
+      "cwd": "${COPILOT_CLI_PATH}",
+      "env": {
+        "PYTHONPATH": "${AGENT_SRC_PATH};${COPILOT_CLI_PATH}",
+        "IPAM_FQDN": "${IPAM_FQDN}",
+        "IPAM_SPACE": "${IPAM_SPACE}",
+        "IPAM_BLOCK": "${IPAM_BLOCK}",
+        "IPAM_ENGINE_CLIENT_ID": "${IPAM_ENGINE_CLIENT_ID}"
+      }
+    },
+    "avm-resolver": {
+      "command": "python",
+      "args": ["-m", "mcp_servers.avm_resolver_server"],
+      "cwd": "${COPILOT_CLI_PATH}",
+      "env": {
+        "PYTHONPATH": "${AGENT_SRC_PATH};${COPILOT_CLI_PATH}"
+      }
+    }
+  }
+}

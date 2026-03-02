@@ -1,0 +1,168 @@
+# =============================================================================
+# GSIS Automation - Git Ignore Configuration
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Excluded Implementation Folders
+# -----------------------------------------------------------------------------
+# Agent folder - part of another implementation, not used in Copilot CLI approach
+agent/
+
+# -----------------------------------------------------------------------------
+# Python
+# -----------------------------------------------------------------------------
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+*.whl
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# -----------------------------------------------------------------------------
+# IDE / Editor
+# -----------------------------------------------------------------------------
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Vim
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# Operating System
+# -----------------------------------------------------------------------------
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+
+# -----------------------------------------------------------------------------
+# Sensitive / Credentials
+# -----------------------------------------------------------------------------
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Azure credentials
+azure.json
+servicePrincipal.json
+*.pfx
+*.p12
+*.pem
+*.key
+
+# Terraform state (if used)
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# -----------------------------------------------------------------------------
+# Output / Generated Files
+# -----------------------------------------------------------------------------
+# Output folder contains generated files per spec - may want to keep for review
+# Uncomment the line below to exclude all output
+# output/
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# -----------------------------------------------------------------------------
+# Copilot / AI Tracking
+# -----------------------------------------------------------------------------
+# Copilot tracking folder - contains session-specific research and plans
+# These are useful for debugging but not needed in the repo
+.copilot-tracking/
+
+# MCP config - contains local paths, CI generates its own
+# Use .copilot/mcp-config.json.example as template
+.copilot/mcp-config.json
+
+# -----------------------------------------------------------------------------
+# Node.js (if Copilot CLI extensions are used)
+# -----------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# -----------------------------------------------------------------------------
+# Excel temporary files
+# -----------------------------------------------------------------------------
+~$*.xlsx
+~$*.xls
