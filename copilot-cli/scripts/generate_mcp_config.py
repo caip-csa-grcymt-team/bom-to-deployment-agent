@@ -57,13 +57,12 @@ def main() -> int:
                     "AZURE_CLIENT_ID": os.environ.get("AZURE_CLIENT_ID", ""),
                 },
             },
-            "ui-patcher": {
+            "avm-resolver": {
                 "command": python_cmd,
-                "args": ["-m", "mcp_servers.ui_patcher_server"],
+                "args": ["-m", "mcp_servers.avm_resolver_server"],
                 "cwd": copilot_cli_path,
                 "env": {
                     "PYTHONPATH": copilot_cli_path,
-                    "WORKSPACE_ROOT": workspace,
                 },
             },
         }
