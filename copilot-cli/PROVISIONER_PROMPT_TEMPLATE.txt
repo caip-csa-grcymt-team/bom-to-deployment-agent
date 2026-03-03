@@ -90,8 +90,11 @@ Process the planner outputs using this 6-step workflow:
    Generate main.bicepparam:
    - using './main.bicep' declaration
    - All non-secret parameters with concrete values from input files
-   - Do NOT include `iacPassword` in the bicepparam file — it is supplied by the CI/CD pipeline at deployment time
-   - Add a comment: // iacPassword is supplied via CI/CD pipeline (GitHub Actions secret IAC_PASSWORD)
+   - For `iacPassword`, use Bicep's readEnvironmentVariable function to read it from the
+     IAC_PASSWORD environment variable at deployment time:
+       param iacPassword = readEnvironmentVariable('IAC_PASSWORD')
+     This is MANDATORY when iacPassword is declared in main.bicep. Do NOT omit it, comment it out,
+     or set a placeholder. The readEnvironmentVariable function ensures the secret is never stored on disk.
    Write both files to {{OUTPUT_DIR}}:
    - main.bicep
    - main.bicepparam

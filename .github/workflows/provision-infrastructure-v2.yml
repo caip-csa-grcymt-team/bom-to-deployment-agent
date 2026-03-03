@@ -455,7 +455,6 @@ jobs:
             --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
             --template-file "${OUTPUT_DIR}/main.bicep" \
             --parameters "${OUTPUT_DIR}/main.bicepparam" \
-            --parameters iacPassword="${IAC_PASSWORD}" \
             2>&1 | tee what-if-output.log
 
           echo ""
@@ -483,7 +482,6 @@ jobs:
             --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
             --template-file "${OUTPUT_DIR}/main.bicep" \
             --parameters "${OUTPUT_DIR}/main.bicepparam" \
-            --parameters iacPassword="${IAC_PASSWORD}" \
             --mode Incremental \
             --name "$DEPLOYMENT_NAME" \
             --output json > deployment-output.json

@@ -165,14 +165,16 @@ param vnetAddressPrefix = '10.0.0.0/24'
 // Resource-specific params
 param storageAccountCount = 1
 
-// iacPassword is supplied via CI/CD pipeline (GitHub Actions secret IAC_PASSWORD)
+// Password read from environment variable — secret never stored on disk
+param iacPassword = readEnvironmentVariable('IAC_PASSWORD')
 ```
 
 ### Rules
 
 - Use `using './main.bicep'` as the first declaration.
 - Set all non-secret parameters to concrete values derived from the planner input files.
-- Comment out `@secure()` parameters with a note that they must be provided at deployment time.
+- For `iacPassword`, use `readEnvironmentVariable('IAC_PASSWORD')` — this reads the value from the
+  `IAC_PASSWORD` environment variable at deployment time. Do NOT omit, comment out, or hardcode this parameter.
 - Parameter values come from `resources.json` (counts, SKUs), `vnet-params.json` (CIDRs, location), and planner tags (application name, environment).
 
 ## Parameter Naming Conventions
