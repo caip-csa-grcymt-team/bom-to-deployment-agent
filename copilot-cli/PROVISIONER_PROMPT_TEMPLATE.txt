@@ -90,7 +90,8 @@ Process the planner outputs using this 6-step workflow:
    Generate main.bicepparam:
    - using './main.bicep' declaration
    - All non-secret parameters with concrete values from input files
-   - Secret parameters as comments: // @secure() - provide at deployment time
+   - Do NOT include `iacPassword` in the bicepparam file — it is supplied by the CI/CD pipeline at deployment time
+   - Add a comment: // iacPassword is supplied via CI/CD pipeline (GitHub Actions secret IAC_PASSWORD)
    Write both files to {{OUTPUT_DIR}}:
    - main.bicep
    - main.bicepparam
@@ -100,7 +101,14 @@ CRITICAL RULES:
 - publicNetworkAccess: 'Disabled' on every resource that supports it
 - VNet is ALWAYS the first module — all resources reference its outputs for subnet IDs
 - Rely on Bicep's implicit dependency graph through resource references — do NOT add explicit dependsOn unless there is no output reference chain
-- Parameters for secrets (passwords, keys, connection strings) must be decorated with @secure() and have no default values
+- PASSWORD HANDLING: Define exactly ONE @secure() parameter named `iacPassword` (type: string, no default).
+  Use `iacPassword` for EVERY resource that requires a password or secret credential, including but not limited to:
+  • SQL Server `administratorLoginPassword`
+  • Virtual Machine `adminPassword`
+  • Redis `accessKeys`
+  • Any other module parameter that is @secure() and represents a password/credential
+  Do NOT create separate password parameters per resource (no sqlAdminPassword, vmAdminPassword, etc.).
+  The CI/CD pipeline supplies the value for `iacPassword` at deployment time via a GitHub Actions secret.
 - Non-secret parameters should have concrete values derived from input files
 - Apply tags to every resource using the tags parameter
 - Use for loops for resources with count > 1

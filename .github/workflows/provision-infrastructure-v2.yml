@@ -431,6 +431,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Validate Generated Bicep
         id: validate-bicep
+        env:
+          IAC_PASSWORD: ${{ secrets.IAC_PASSWORD }}
         run: |
           OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
 
@@ -453,6 +455,7 @@ jobs:
             --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
             --template-file "${OUTPUT_DIR}/main.bicep" \
             --parameters "${OUTPUT_DIR}/main.bicepparam" \
+            --parameters iacPassword="${IAC_PASSWORD}" \
             2>&1 | tee what-if-output.log
 
           echo ""
@@ -464,6 +467,8 @@ jobs:
       # ---------------------------------------------------------------
       - name: Deploy Infrastructure
         id: deploy
+        env:
+          IAC_PASSWORD: ${{ secrets.IAC_PASSWORD }}
         run: |
           OUTPUT_DIR="${{ steps.copilot-plan.outputs.output_dir }}"
           RG_NAME="${{ steps.create-rg.outputs.rg_name }}"
@@ -478,6 +483,7 @@ jobs:
             --subscription "${{ env.AZURE_SUBSCRIPTION_ID }}" \
             --template-file "${OUTPUT_DIR}/main.bicep" \
             --parameters "${OUTPUT_DIR}/main.bicepparam" \
+            --parameters iacPassword="${IAC_PASSWORD}" \
             --mode Incremental \
             --name "$DEPLOYMENT_NAME" \
             --output json > deployment-output.json

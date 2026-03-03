@@ -49,15 +49,14 @@ Resource-specific parameters (conditional on resources in the deployment):
 | `{resourceType}Count` | `int` | When resource count comes from `resources.json` |
 | `{resourceType}SkuName` | `string` | When SKU is configurable |
 | `sqlAdminLogin` | `string` | When SQL Server is present |
-| `sqlAdminPassword` | `string` (`@secure()`) | When SQL Server is present |
 | `vmAdminUsername` | `string` | When Virtual Machines are present |
-| `vmAdminPassword` | `string` (`@secure()`) | When Virtual Machines are present |
+| `iacPassword` | `string` (`@secure()`) | When ANY resource requires a password (SQL, VMs, Redis, etc.) |
 
-Secure parameters must be decorated with `@secure()` and have no default values:
+**Password convention**: Use a single `@secure()` parameter named `iacPassword` for ALL password fields across all resources. Do NOT create separate password parameters per resource. The CI/CD pipeline supplies this value via a GitHub Actions secret (`IAC_PASSWORD`).
 
 ```bicep
 @secure()
-param sqlAdminPassword string
+param iacPassword string
 ```
 
 ### Module Ordering
@@ -166,9 +165,7 @@ param vnetAddressPrefix = '10.0.0.0/24'
 // Resource-specific params
 param storageAccountCount = 1
 
-// @secure() - provide at deployment time
-// param sqlAdminPassword = ''
-// param vmAdminPassword = ''
+// iacPassword is supplied via CI/CD pipeline (GitHub Actions secret IAC_PASSWORD)
 ```
 
 ### Rules
@@ -182,5 +179,5 @@ param storageAccountCount = 1
 
 - Use camelCase for all parameter names.
 - Match AVM module parameter names where applicable (e.g., `skuName`, `tier`, `addressPrefixes`).
-- Use descriptive suffixes: `Count`, `SkuName`, `Tier`, `AdminLogin`, `AdminPassword`.
-- Prefix resource-specific params with the resource type in camelCase (e.g., `sqlAdminLogin`, `aksNodeCount`).
+- Use descriptive suffixes: `Count`, `SkuName`, `Tier`, `AdminLogin`.
+- Use a single `iacPassword` parameter for all password/credential fields — do NOT create per-resource password params.
