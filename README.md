@@ -17,7 +17,7 @@ Automated Azure infrastructure provisioning from Azure Pricing Calculator export
 
 The solution uses a two-agent architecture orchestrated by a GitHub Actions workflow:
 
-<!-- Architecture diagram placeholder — add diagram image here -->
+![Architecture diagram showing the two-agent workflow: the infra-planner agent parses a BOM spreadsheet, plans network topology, and reserves IPAM space, then the infra-provisioner agent resolves AVM modules and generates Bicep templates for deployment.](media/architecture.png)
 
 ### Agents
 
