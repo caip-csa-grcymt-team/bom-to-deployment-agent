@@ -444,7 +444,7 @@ jobs:
           echo ""
           echo "=== Building (Compiling) Bicep ==="
           az bicep build --file "${OUTPUT_DIR}/main.bicep"
-          echo "✓ Bicep compilation successful"
+          echo "Bicep compilation successful"
 
           echo ""
           echo "=== Running What-If Deployment Preview ==="
@@ -457,7 +457,7 @@ jobs:
 
           echo ""
           echo "bicep_valid=true" >> $GITHUB_OUTPUT
-          echo "✓ Bicep validation passed"
+          echo "Bicep validation passed"
 
       # ---------------------------------------------------------------
       # Stage 7: Deploy Bicep

@@ -33,8 +33,10 @@ logger = logging.getLogger(__name__)
 
 AVM_CSV_URL = "https://aka.ms/avm/index/bicep/res/csv"
 MCR_BASE_URL = "https://mcr.microsoft.com"
+AVM_README_BASE_URL = "https://raw.githubusercontent.com/Azure/bicep-registry-modules/main"
 CSV_CACHE_TTL = 86400  # 24 hours in seconds
 VERSION_CACHE_TTL = 3600  # 1 hour in seconds
+README_CACHE_TTL = 86400  # 24 hours in seconds
 
 
 class AvmModuleResolver:
@@ -51,6 +53,7 @@ class AvmModuleResolver:
         self._csv_cache: dict[str, dict] | None = None
         self._csv_cache_time: float = 0
         self._version_cache: dict[str, tuple[str, float]] = {}
+        self._readme_cache: dict[str, tuple[str, float]] = {}
 
     async def _load_csv_index(self) -> dict[str, dict]:
         """Download and parse the AVM Bicep resource modules CSV index.
@@ -291,6 +294,201 @@ class AvmModuleResolver:
             logger.warning("Failed to load AVM module index", exc_info=True)
             return [{"error": f"Failed to load module index: {e}"}]
 
+    async def _fetch_readme(self, module_path: str) -> str:
+        """Fetch the README.md for an AVM module from GitHub.
+
+        Results are cached for 24 hours.
+
+        Args:
+            module_path: AVM module path (e.g. ``avm/res/storage/storage-account``).
+
+        Returns:
+            Raw README content string.
+
+        Raises:
+            httpx.HTTPStatusError: If the GitHub API returns an error.
+        """
+        now = time.monotonic()
+        cached = self._readme_cache.get(module_path)
+        if cached and (now - cached[1]) < README_CACHE_TTL:
+            return cached[0]
+
+        url = f"{AVM_README_BASE_URL}/{module_path}/README.md"
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+
+        content = resp.text
+        self._readme_cache[module_path] = (content, now)
+        return content
+
+    def _parse_parameters_from_readme(self, readme: str) -> dict[str, Any]:
+        """Extract parameter information from an AVM module README.
+
+        Parses the README markdown to find the top-level parameters summary
+        table and individual parameter sections, extracting required/conditional
+        parameters with their types and allowed values.
+
+        Args:
+            readme: Raw README.md content.
+
+        Returns:
+            Dict with ``required``, ``conditional``, and ``optional`` parameter lists.
+        """
+        required_params: list[dict] = []
+        conditional_params: list[dict] = []
+        optional_params: list[dict] = []
+
+        # Parse the summary table at the end of the Parameters section
+        # AVM READMEs have a "Required parameters" table followed by
+        # "Conditional parameters" and "Optional parameters" tables
+        current_section = None
+        in_params_section = False
+
+        for line in readme.split("\n"):
+            stripped = line.strip()
+
+            # Detect the top-level Parameters heading
+            if stripped.startswith("## Parameters"):
+                in_params_section = True
+                continue
+
+            # Stop at the next ## heading after Parameters
+            if in_params_section and stripped.startswith("## ") and not stripped.startswith("## Parameters"):
+                in_params_section = False
+                continue
+
+            if not in_params_section:
+                continue
+
+            # Detect sub-section headers within Parameters
+            if "Required parameters" in stripped:
+                current_section = "required"
+                continue
+            elif "Conditional parameters" in stripped:
+                current_section = "conditional"
+                continue
+            elif "Optional parameters" in stripped:
+                current_section = "optional"
+                continue
+
+            # Parse table rows: | paramName | type | description |
+            if stripped.startswith("|") and "|" in stripped[1:]:
+                cols = [c.strip() for c in stripped.split("|")]
+                # Filter out empty and header/separator rows
+                cols = [c for c in cols if c and c != "---" and not all(ch == "-" for ch in c)]
+                if len(cols) >= 2 and cols[0] not in ("", "---"):
+                    param_name = cols[0]
+                    param_type = cols[1] if len(cols) > 1 else ""
+                    param_desc = cols[2] if len(cols) > 2 else ""
+
+                    # Skip table headers
+                    if param_name.lower() in ("name", "parameter", "property"):
+                        continue
+
+                    param_info = {
+                        "name": param_name,
+                        "type": param_type,
+                        "description": param_desc,
+                    }
+
+                    if current_section == "required":
+                        required_params.append(param_info)
+                    elif current_section == "conditional":
+                        conditional_params.append(param_info)
+                    elif current_section == "optional":
+                        optional_params.append(param_info)
+
+        # Now parse individual parameter detail sections for allowed values
+        # Pattern: ### Parameter: `paramName`
+        param_details: dict[str, dict] = {}
+        current_param: str | None = None
+        current_detail: dict[str, Any] = {}
+
+        for line in readme.split("\n"):
+            stripped = line.strip()
+
+            # Match parameter detail heading
+            if stripped.startswith("### Parameter: `") and stripped.endswith("`"):
+                # Save previous param
+                if current_param:
+                    param_details[current_param] = current_detail
+
+                current_param = stripped[len("### Parameter: `"):-1]
+                current_detail = {}
+                continue
+
+            if current_param:
+                # Extract Required/Type/Allowed/Default
+                if stripped.startswith("• Required:"):
+                    current_detail["required"] = "Yes" in stripped
+                elif stripped.startswith("• Type:"):
+                    current_detail["type"] = stripped.replace("• Type:", "").strip()
+                elif stripped.startswith("• Default:"):
+                    current_detail["default"] = stripped.replace("• Default:", "").strip()
+                elif stripped.startswith("• Allowed:"):
+                    # Allowed values often span multiple lines
+                    current_detail["allowed"] = stripped.replace("• Allowed:", "").strip()
+
+        # Save last param
+        if current_param:
+            param_details[current_param] = current_detail
+
+        # Enrich parameter lists with detail info
+        for param_list in [required_params, conditional_params, optional_params]:
+            for param in param_list:
+                detail = param_details.get(param["name"], {})
+                if "allowed" in detail:
+                    param["allowed"] = detail["allowed"]
+                if "default" in detail:
+                    param["default"] = detail["default"]
+                if detail.get("type"):
+                    param["type"] = detail["type"]
+
+        return {
+            "required": required_params,
+            "conditional": conditional_params,
+            "optional": optional_params[:20],  # Limit optional to avoid token bloat
+        }
+
+    async def get_module_parameters(
+        self, module_path: str, *, include_child: str | None = None
+    ) -> dict[str, Any]:
+        """Get the parameter schema for an AVM module by fetching its README.
+
+        Args:
+            module_path: AVM module path (e.g. ``avm/res/sql/server``).
+            include_child: Optional child resource path to also fetch
+                (e.g. ``database`` for ``avm/res/sql/server/database``).
+
+        Returns:
+            Dict with module path, parameters, and optionally child parameters.
+        """
+        result: dict[str, Any] = {"module_path": module_path}
+
+        try:
+            readme = await self._fetch_readme(module_path)
+            result["parameters"] = self._parse_parameters_from_readme(readme)
+        except httpx.HTTPStatusError as e:
+            result["error"] = f"Failed to fetch README for {module_path}: {e.response.status_code}"
+            return result
+        except Exception as e:
+            result["error"] = f"Failed to parse parameters for {module_path}: {e}"
+            return result
+
+        if include_child:
+            child_path = f"{module_path}/{include_child}"
+            try:
+                child_readme = await self._fetch_readme(child_path)
+                result["child_parameters"] = {
+                    "child_path": child_path,
+                    "parameters": self._parse_parameters_from_readme(child_readme),
+                }
+            except Exception:
+                logger.warning("Failed to fetch child module README: %s", child_path)
+
+        return result
+
 
 def create_server() -> Server:
     """Create and configure the AVM resolver MCP server.
@@ -336,6 +534,38 @@ def create_server() -> Server:
                     "properties": {},
                 },
             ),
+            Tool(
+                name="get_module_parameters",
+                description=(
+                    "Get the required, conditional, and key optional parameters for an AVM "
+                    "Bicep module by fetching its official README from GitHub. Use this BEFORE "
+                    "generating module invocations to ensure correct parameter names, types, "
+                    "and allowed values. For parent modules with child resources (e.g. "
+                    "sql/server with databases), set include_child to get child parameters too."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "module_path": {
+                            "type": "string",
+                            "description": (
+                                "AVM module path (e.g. 'avm/res/sql/server', "
+                                "'avm/res/compute/virtual-machine', "
+                                "'avm/res/network/application-gateway')"
+                            ),
+                        },
+                        "include_child": {
+                            "type": "string",
+                            "description": (
+                                "Optional child resource name to also fetch parameters for "
+                                "(e.g. 'database' for sql/server/database). Only needed for "
+                                "child resources configured as arrays on the parent module."
+                            ),
+                        },
+                    },
+                    "required": ["module_path"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -345,6 +575,8 @@ def create_server() -> Server:
             return await _handle_resolve_module(resolver, arguments)
         if name == "list_available_modules":
             return await _handle_list_modules(resolver)
+        if name == "get_module_parameters":
+            return await _handle_get_module_parameters(resolver, arguments)
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
     return server
@@ -401,6 +633,28 @@ async def _handle_list_modules(resolver: AvmModuleResolver) -> list[TextContent]
         output_lines.append(f"\n... and {len(modules) - 50} more modules")
 
     return [TextContent(type="text", text="\n".join(output_lines))]
+
+
+async def _handle_get_module_parameters(
+    resolver: AvmModuleResolver,
+    arguments: dict[str, Any],
+) -> list[TextContent]:
+    """Handle the get_module_parameters tool invocation.
+
+    Args:
+        resolver: AvmModuleResolver instance.
+        arguments: Tool arguments containing module_path and optional include_child.
+
+    Returns:
+        List with parameter schema as JSON TextContent.
+    """
+    module_path = arguments.get("module_path")
+    if not module_path:
+        return [TextContent(type="text", text=json.dumps({"error": "module_path is required"}))]
+
+    include_child = arguments.get("include_child")
+    result = await resolver.get_module_parameters(module_path, include_child=include_child)
+    return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
 
 async def main() -> None:

@@ -137,6 +137,43 @@ ARM child resource types (e.g., `Microsoft.KeyVault/vaults/secrets`, `Microsoft.
 
 Do not attempt to resolve child resources to separate AVM modules. Nest them within their parent module invocation.
 
+## Parameter Schema Introspection
+
+**CRITICAL**: After resolving an AVM module path and version, you MUST call `get_module_parameters` to retrieve the parameter schema before generating any module invocation. This step is non-negotiable.
+
+### Why This Is Required
+
+AVM module parameters are updated independently of LLM training data. Common mismatches include:
+
+- **Renamed parameters**: e.g., `zone` → `availabilityZone` (int with allowed values [-1, 1, 2, 3])
+- **Removed inline objects**: e.g., `webApplicationFirewallConfiguration` replaced by `firewallPolicyResourceId` (resource ID reference)
+- **Missing required parameters**: e.g., child resource arrays requiring fields that LLM training data omits
+- **Type mismatches**: e.g., a parameter is `int` but training data uses `string`
+
+### Usage
+
+Call the `get_module_parameters` MCP tool with the resolved module path:
+
+```text
+Tool: avm-resolver / get_module_parameters
+Input: { "module_path": "avm/res/compute/virtual-machine" }
+```
+
+For parent modules with child resources, also fetch the child schema:
+
+```text
+Tool: avm-resolver / get_module_parameters
+Input: { "module_path": "avm/res/sql/server", "include_child": "database" }
+```
+
+### Rules
+
+1. The tool output is **authoritative**. Parameter names, types, and allowed values from the tool override any knowledge from training data.
+2. Every **required** parameter must be included in the module invocation.
+3. Every **conditional** parameter must be evaluated against its condition. If the condition applies (e.g., WAF_v2 SKU requires `firewallPolicyResourceId`), the parameter must be set.
+4. Do NOT include parameter names that were not returned by the tool. If a parameter you expect is missing from the tool output, it likely does not exist — do not invent it.
+5. After generating each module invocation, cross-check it against the schema to catch omissions or type errors.
+
 ## CSV Index Reference
 
 The AVM CSV index provides a machine-readable mapping of all published AVM resource modules:

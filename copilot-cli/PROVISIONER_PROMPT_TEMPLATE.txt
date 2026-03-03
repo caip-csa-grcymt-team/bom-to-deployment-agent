@@ -31,6 +31,20 @@ Process the planner outputs using this 6-step workflow:
    - If a resource type has no AVM module, log a warning and skip it
    Do NOT hardcode module versions. Always use the version returned by the resolver.
 
+2b. FETCH PARAMETER SCHEMAS FOR EVERY RESOLVED MODULE
+   For EACH module resolved in Step 2, call avm-resolver-get_module_parameters with the module_path.
+   - For parent modules that configure child resources (e.g. sql/server with databases), also set
+     include_child to the child resource name (e.g. "database") to retrieve child parameter schemas.
+   - Record the required, conditional, and key optional parameters returned by the tool.
+   - Pay special attention to:
+     • Required parameters — these MUST be set or the deployment will fail.
+     • Conditional parameters — check the condition and set when applicable.
+     • Parameter types and allowed values — use ONLY the types and values from the schema.
+   - Do NOT rely on training data for parameter names or types. The tool output is the
+     authoritative source. Training data may use outdated or incorrect parameter names
+     (e.g. 'zone' instead of 'availabilityZone', or inline objects instead of resource references).
+   This step is MANDATORY. Do not generate any module invocation without first consulting its schema.
+
 3. GENERATE VNET MODULE
    Using vnet-params.json, generate the VNet AVM module invocation:
    - Module: avm/res/network/virtual-network
@@ -50,6 +64,9 @@ Process the planner outputs using this 6-step workflow:
 5. GENERATE RESOURCE MODULES
    For each resource in resources.json:
    - Use the AVM module reference from Step 2
+   - CRITICAL: Use ONLY the parameter names, types, and allowed values obtained in Step 2b.
+     Do NOT guess or recall parameter names from training data. If a parameter was not returned
+     by get_module_parameters, do not include it. If a required parameter was returned, you MUST include it.
    - Apply the naming convention from the naming-convention instruction file
    - Apply the private access pattern (Pattern A or Pattern B) from the private-access instruction file
    - Wire private endpoints to the PE subnet
@@ -58,6 +75,16 @@ Process the planner outputs using this 6-step workflow:
    - Set publicNetworkAccess to Disabled on every resource that supports it
    - Use resource counts from resources.json (loop with for-range when count > 1)
    - Set SKUs and tiers from resources.json properties
+
+5b. VALIDATE GENERATED BICEP
+   After generating the complete main.bicep:
+   - Review every module invocation against its parameter schema from Step 2b:
+     • Confirm all required parameters are present.
+     • Confirm conditional parameters are set when their conditions apply.
+     • Confirm no parameter names are used that were NOT in the schema.
+     • Confirm parameter value types match the schema (e.g. int vs string, resource ID vs inline object).
+   - If any discrepancies are found, correct them before writing the file.
+   - This self-review catches errors that would otherwise require a separate build/deploy validation cycle.
 
 6. GENERATE MAIN.BICEPPARAM AND WRITE OUTPUTS
    Generate main.bicepparam:
