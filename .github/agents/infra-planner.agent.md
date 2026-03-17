@@ -181,6 +181,12 @@ deployVMs (checkbox) → vmBatchCount (slider: 0-5)
 | `batch{N}Section.batch{N}DiskType.defaultValue` | Storage type | String (see mapping) |
 | `batch{N}Section.batch{N}DiskDelete.defaultValue` | Delete option | String ("Delete", "Detach") |
 
+##### ⚠️ Windows VM Name Length Limit
+
+**Windows VMs require the computer name (and therefore the VM resource name) to be no more than 15 characters.** When the BOM contains Windows VMs (OS keyword contains "Windows"), ensure the generated `batch{N}Name` value is short enough that the final VM name (`vm-{batchName}-{number}`) stays within 15 characters. Truncate the batch name aggressively if needed. Linux VMs allow up to 64 characters.
+
+Example: For batch name "APP1" with 2 Windows VMs, the names `vm-app1-01` and `vm-app1-02` (10 chars) are valid. A batch name like "LONGAPPNAME" would produce `vm-longappname-01` (18 chars) which **exceeds the 15-character limit and will fail deployment**.
+
 ##### BOM Extraction for VMs
 
 Each row with "Service type" = "Virtual Machines" represents a VM batch:

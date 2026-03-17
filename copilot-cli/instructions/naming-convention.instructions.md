@@ -172,7 +172,22 @@ Constraints: lowercase, 3-44 characters.
 
 Pattern: `vm-{appname}-{env}-{number}`
 
-Constraints: 1-15 characters for Windows, 1-64 characters for Linux. Truncate aggressively for Windows VMs.
+Constraints:
+
+- **Windows VMs**: The `computerName` (OS hostname) must be **no more than 15 characters**. Because the resource name and computer name are typically kept in sync, limit the full VM name to 15 characters for Windows VMs. Truncate `appname` aggressively or omit `env`/`region` segments to fit.
+- **Linux VMs**: 1-64 characters.
+
+> **⚠️ Windows VM Naming Hint**: A name like `vm-min69rg170-dev-01` is 21 characters and will **fail** deployment for Windows VMs. Shorten to fit within 15 characters (e.g., `vm-min69rg-d-01`).
+
+```bicep
+// Windows VM — must be ≤ 15 characters
+// Example: vm-min69rg-d-01 (15 chars)
+var windowsVmName = take('vm-${take(applicationName, 6)}-${take(environment, 1)}-01', 15)
+
+// Linux VM — up to 64 characters, standard pattern applies
+// Example: vm-min69rg170-dev-01
+var linuxVmName = 'vm-${applicationName}-${environment}-01'
+```
 
 ## Subnet Naming
 
@@ -248,5 +263,6 @@ Full naming set for `appname=min69rg170`, `env=dev`, `region=weu`:
 | Cosmos DB (MongoDB) | `cosmon-min69rg170-dev-weu-01` |
 | MySQL Flexible | `mysql-min69rg170-dev-weu-01` |
 | PostgreSQL Flexible | `psql-min69rg170-dev-weu-01` |
-| Virtual Machine | `vm-min69rg170-dev-01` |
+| Virtual Machine (Linux) | `vm-min69rg170-dev-01` |
+| Virtual Machine (Windows) | `vm-min69rg-d-01` |
 | Managed Identity | `id-min69rg170-dev-weu-01` |
